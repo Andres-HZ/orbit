@@ -1,0 +1,22 @@
+{
+	"name": "${localWorkspaceFolderBasename}",
+	"build": {
+		"context": "..",
+		"dockerfile": "Dockerfile"
+	},
+	"workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+	"features": {
+		"ghcr.io/devcontainers/features/common-utils:2": {},
+		"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+			"moby": false
+		},
+		"ghcr.io/devcontainers/features/git:1": {},
+		"ghcr.io/devcontainers/features/node:2": {}
+	},
+	"mounts": [
+        "source=${localWorkspaceFolderBasename}-home,target=/home/vscode,type=volume"
+    ],
+	"postCreateCommand": "bash ./.devcontainer/post-create.sh",
+	"remoteUser": "vscode",
+	"shutdownAction": "stopContainer"
+}
