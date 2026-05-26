@@ -1,0 +1,12 @@
+node_modules/
+dist/
+api/dist/
+web/dist/
+.env
+.DS_Store
+*.log
+
+# Vite and test caches
+*.tsbuildinfo
+.vite/
+coverage/
