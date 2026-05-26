@@ -1,0 +1,24 @@
+schema: spec-driven
+
+context: |
+  Orbit — AI-powered activity planning app. See PRD.md for full context.
+  Tech: Node.js + Express + PostgreSQL backend, React + Vite + Tailwind + Framer Motion web frontend.
+  Mobile target (React Native) is future; current delivery is responsive web with black/purple palette.
+  Architecture: clean/feature-based (controllers → services → repositories).
+  API: /api/v1, ApiResponse<T> wrapper, JWT auth, ISO 8601 dates, costs in cents.
+  AI: Claude via dedicated AIService, model claude-sonnet-4-20250514, rule-based fallback.
+  Naming: camelCase vars, PascalCase classes, kebab-case files, UPPER_SNAKE_CASE env vars.
+
+rules:
+  proposal:
+    - Reference PRD.md for feature scope
+    - Always include Non-Goals for phased delivery
+  specs:
+    - Use SHALL/MUST for normative requirements
+    - Every requirement needs at least one WHEN/THEN scenario
+  design:
+    - Document web-first vs mobile-native trade-offs
+    - Include black/purple color tokens when specifying UI
+  tasks:
+    - Group by feature area matching spec capabilities
+    - Backend tasks before dependent frontend tasks
