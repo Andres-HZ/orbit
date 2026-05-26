@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { query } from "./db.js";
+import { locationContextSchema, nearbyExperienceSchema, weatherContextSchema } from "./nearby.js";
 import type { PreferencesRepository, PreferencesRecord } from "./repositories.js";
 import { AppError } from "./shared.js";
 
@@ -13,11 +14,25 @@ export const planContextSchema = z.object({
   energyLevel: z.enum(["low", "medium", "high"]),
   groupSize: z.number().int().min(1).max(20),
   indoorOutdoorPreference: z.enum(["indoor", "outdoor", "either"]),
-  interests: z.array(z.string().min(1)).min(1)
+  interests: z.array(z.string().min(1)).min(1),
+  locationContext: locationContextSchema.optional(),
+  weatherContext: weatherContextSchema.optional(),
+  nearbyExperiences: z.array(nearbyExperienceSchema).optional()
 });
 
 export type PlanContext = z.infer<typeof planContextSchema>;
 type PlanLocale = PlanContext["locale"];
+type PlanMode = "manual" | "surprise";
+
+export const surprisePlanSchema = z.object({
+  locale: z.enum(["es", "en"]).default("es"),
+  mood: z.string().min(1).optional(),
+  location: z.string().min(2).optional(),
+  budgetCents: z.number().int().min(0).optional(),
+  availableMinutes: z.number().int().min(30).max(720).optional()
+});
+
+export type SurprisePlanInput = z.infer<typeof surprisePlanSchema>;
 
 export type EnrichedPlanContext = PlanContext & {
   storedPreferences: PreferencesRecord | null;
@@ -31,6 +46,8 @@ export type PlanActivity = {
   estimatedDurationMinutes: number;
   locationLabel: string;
   distanceLabel: string;
+  mapUrl?: string;
+  providerSource?: string;
   matchExplanation: string;
 };
 
@@ -47,6 +64,11 @@ export type PlanResult = {
     withinBudget: boolean;
     withinTime: boolean;
   };
+  metadata?: {
+    mode: PlanMode;
+    defaultsApplied?: string[];
+    contextSummary?: string[];
+  };
   activities: PlanActivity[];
 };
 
@@ -54,6 +76,7 @@ export type StoredPlan = {
   id: string;
   requestId: string;
   userId: string;
+  source: PlanMode;
   context: PlanContext;
   enrichedContext: EnrichedPlanContext;
   result: PlanResult;
@@ -66,7 +89,7 @@ export type PlanRepository = {
     context: PlanContext;
     enrichedContext: EnrichedPlanContext;
     result: PlanResult;
-    source: string;
+    source: PlanMode;
   }): Promise<StoredPlan>;
   findById(userId: string, planId: string): Promise<StoredPlan | null>;
 };
@@ -77,6 +100,7 @@ function mapStoredPlan(row: Record<string, unknown>): StoredPlan {
     id: String(row.id),
     requestId: String(row.request_id),
     userId: String(row.user_id),
+    source: (row.source as PlanMode | undefined) ?? "manual",
     context: row.context as PlanContext,
     enrichedContext: row.enriched_context as EnrichedPlanContext,
     result: {
@@ -116,12 +140,13 @@ export const pgPlans: PlanRepository = {
     return mapStoredPlan({
       ...(result.rows[0] as Record<string, unknown>),
       context: request.context,
-      enriched_context: request.enriched_context
+      enriched_context: request.enriched_context,
+      source: request.source
     });
   },
   async findById(userId, planId) {
     const result = await query(
-      `SELECT pr.context, pr.enriched_context, res.*
+      `SELECT pr.context, pr.enriched_context, pr.source, res.*
        FROM plan_results res
        JOIN plan_requests pr ON pr.id = res.request_id
        WHERE res.user_id = $1 AND res.id = $2`,
@@ -144,6 +169,7 @@ export function createMemoryPlanRepository(): PlanRepository {
         id,
         requestId,
         userId: input.userId,
+        source: input.source,
         context: input.context,
         enrichedContext: input.enrichedContext,
         result: {
@@ -216,36 +242,47 @@ export function fallbackPlan(context: EnrichedPlanContext): PlanResult {
   const costParts = splitBudget(budget);
   const durationParts = splitDuration(minutes);
   const vibe = text.mood(context.mood);
+  const nearby = context.nearbyExperiences ?? [];
 
   const activities: PlanActivity[] = [
     {
       order: 1,
-      title: indoor ? text.warmUpIndoor : text.warmUpOutdoor,
-      category: text.category(interest),
+      title: nearby[0]?.title ?? (indoor ? text.warmUpIndoor : text.warmUpOutdoor),
+      category: text.category(nearby[0]?.category ?? interest),
       estimatedCostCents: costParts[0],
       estimatedDurationMinutes: durationParts[0],
-      locationLabel: text.locationArea(location),
-      distanceLabel: text.nearby,
+      locationLabel: nearby[0]?.locationLabel ?? text.locationArea(location),
+      distanceLabel: nearby[0]?.distanceLabel ?? text.nearby,
+      mapUrl: nearby[0]?.mapUrl,
+      providerSource: nearby[0]?.source,
       matchExplanation: text.warmUpReason(vibe)
     },
     {
       order: 2,
-      title: indoor ? text.mainIndoor : text.mainOutdoor,
-      category: context.energyLevel === "high" ? text.category("active") : text.category("experience"),
+      title: nearby[1]?.title ?? (indoor ? text.mainIndoor : text.mainOutdoor),
+      category: nearby[1]?.category
+        ? text.category(nearby[1].category)
+        : context.energyLevel === "high"
+          ? text.category("active")
+          : text.category("experience"),
       estimatedCostCents: costParts[1],
       estimatedDurationMinutes: durationParts[1],
-      locationLabel: text.recommendedZone(location),
-      distanceLabel: text.localRange,
+      locationLabel: nearby[1]?.locationLabel ?? text.recommendedZone(location),
+      distanceLabel: nearby[1]?.distanceLabel ?? text.localRange,
+      mapUrl: nearby[1]?.mapUrl,
+      providerSource: nearby[1]?.source,
       matchExplanation: text.mainReason(context.energyLevel, context.groupSize)
     },
     {
       order: 3,
-      title: text.closingStop,
-      category: text.category("food"),
+      title: nearby[2]?.title ?? text.closingStop,
+      category: text.category(nearby[2]?.category ?? "food"),
       estimatedCostCents: costParts[2],
       estimatedDurationMinutes: durationParts[2],
-      locationLabel: text.locationNearby(location),
-      distanceLabel: text.shortTransfer,
+      locationLabel: nearby[2]?.locationLabel ?? text.locationNearby(location),
+      distanceLabel: nearby[2]?.distanceLabel ?? text.shortTransfer,
+      mapUrl: nearby[2]?.mapUrl,
+      providerSource: nearby[2]?.source,
       matchExplanation: text.closingReason
     }
   ];
@@ -265,22 +302,32 @@ function fallbackCopy(locale: PlanLocale) {
   const categories: Record<string, string> =
     locale === "es"
       ? {
-          active: "activo",
+      activity: "actividad",
+      active: "activo",
           coffee: "café",
           culture: "cultura",
+      event: "evento",
           experience: "experiencia",
           food: "comida",
           music: "música",
-          nature: "naturaleza"
+      nature: "naturaleza",
+      nightlife: "vida nocturna",
+      park: "parque",
+      restaurant: "restaurante"
         }
       : {
+          activity: "activity",
           active: "active",
           coffee: "coffee",
           culture: "culture",
+          event: "event",
           experience: "experience",
           food: "food",
           music: "music",
-          nature: "nature"
+          nature: "nature",
+          nightlife: "nightlife",
+          park: "park",
+          restaurant: "restaurant"
         };
 
   const moods: Record<string, string> =
@@ -357,7 +404,8 @@ function splitDuration(minutes: number): [number, number, number] {
 export function normalizePlanResult(
   raw: Partial<PlanResult>,
   context: PlanContext,
-  source: "ai" | "fallback"
+  source: "ai" | "fallback",
+  metadata?: PlanResult["metadata"]
 ): PlanResult {
   const text = context.locale === "es"
     ? {
@@ -384,6 +432,8 @@ export function normalizePlanResult(
     estimatedDurationMinutes: Math.max(0, Math.floor(activity.estimatedDurationMinutes ?? 0)),
     locationLabel: activity.locationLabel || context.location,
     distanceLabel: activity.distanceLabel || text.nearby,
+    mapUrl: activity.mapUrl,
+    providerSource: activity.providerSource,
     matchExplanation: activity.matchExplanation || text.explanation
   }));
 
@@ -404,7 +454,79 @@ export function normalizePlanResult(
       withinBudget: totalCost <= context.budgetCents,
       withinTime: totalDuration <= context.availableMinutes
     },
+    metadata: metadata ?? raw.metadata,
     activities
+  };
+}
+
+function budgetDefaultCents(preferences: PreferencesRecord | null) {
+  if (preferences?.budgetStyle === "premium") return 25000000;
+  if (preferences?.budgetStyle === "medium") return 15000000;
+  return 8000000;
+}
+
+function groupSizeDefault(preferences: PreferencesRecord | null) {
+  if (preferences?.socialStyle === "couple") return 2;
+  if (preferences?.socialStyle === "friends" || preferences?.socialStyle === "family") return 4;
+  return 1;
+}
+
+function energyDefault(preferences: PreferencesRecord | null): PlanContext["energyLevel"] {
+  if (preferences?.activityPreferences.includes("active")) return "high";
+  if (preferences?.activityPreferences.includes("calm")) return "low";
+  return "medium";
+}
+
+function settingDefault(preferences: PreferencesRecord | null): PlanContext["indoorOutdoorPreference"] {
+  if (preferences?.activityPreferences.includes("outdoor")) return "outdoor";
+  if (preferences?.activityPreferences.includes("indoor")) return "indoor";
+  return "either";
+}
+
+function deriveSurpriseContext(
+  input: SurprisePlanInput,
+  storedPreferences: PreferencesRecord | null
+): { context: PlanContext; defaultsApplied: string[]; contextSummary: string[] } {
+  const defaultsApplied: string[] = [];
+  const interests = storedPreferences?.interests.length
+    ? storedPreferences.interests
+    : storedPreferences?.favoriteCategories.length
+      ? storedPreferences.favoriteCategories
+      : ["food"];
+
+  if (!input.location) defaultsApplied.push("location");
+  if (!input.mood) defaultsApplied.push("mood");
+  if (input.budgetCents === undefined) defaultsApplied.push("budgetCents");
+  if (input.availableMinutes === undefined) defaultsApplied.push("availableMinutes");
+
+  const context: PlanContext = {
+    locale: input.locale,
+    location: input.location?.trim() || "Medellin",
+    budgetCents: input.budgetCents ?? budgetDefaultCents(storedPreferences),
+    availableMinutes: input.availableMinutes ?? 150,
+    mood: input.mood ?? "Curious",
+    energyLevel: energyDefault(storedPreferences),
+    groupSize: groupSizeDefault(storedPreferences),
+    indoorOutdoorPreference: settingDefault(storedPreferences),
+    interests,
+    locationContext: input.location
+      ? undefined
+      : {
+          source: "manual",
+          label: "Medellin",
+          precision: "manual"
+        }
+  };
+
+  return {
+    context,
+    defaultsApplied,
+    contextSummary: [
+      `mood:${context.mood}`,
+      `budget:${context.budgetCents}`,
+      `duration:${context.availableMinutes}`,
+      `interests:${context.interests.join(",")}`
+    ]
   };
 }
 
@@ -431,8 +553,44 @@ export function createPlanService(
         userId,
         context,
         enrichedContext,
+        result: {
+          ...result,
+          metadata: {
+            mode: "manual",
+            ...result.metadata
+          }
+        },
+        source: "manual"
+      });
+    },
+    async generateSurprise(userId: string, input: SurprisePlanInput) {
+      const storedPreferences = await preferences.findByUserId(userId);
+      const { context, defaultsApplied, contextSummary } = deriveSurpriseContext(input, storedPreferences);
+      const enrichedContext: EnrichedPlanContext = {
+        ...context,
+        storedPreferences
+      };
+      const aiPlan = await aiService.generatePlan(enrichedContext);
+      const baseResult = aiPlan ?? fallbackPlan(enrichedContext);
+      const result: PlanResult = {
+        ...baseResult,
+        metadata: {
+          mode: "surprise",
+          defaultsApplied,
+          contextSummary
+        }
+      };
+
+      if (!result.activities.length) {
+        throw new AppError(500, "PLAN_GENERATION_FAILED", "Could not generate a plan");
+      }
+
+      return plans.create({
+        userId,
+        context,
+        enrichedContext,
         result,
-        source: result.source
+        source: "surprise"
       });
     },
     async findById(userId: string, planId: string) {

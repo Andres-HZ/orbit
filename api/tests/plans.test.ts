@@ -51,7 +51,9 @@ describe("plan generator api", () => {
     expect(response.status).toBe(201);
     expect(response.body.success).toBe(true);
     expect(response.body.data.result.activities.length).toBeGreaterThan(0);
+    expect(response.body.data.source).toBe("manual");
     expect(response.body.data.result.source).toBe("fallback");
+    expect(response.body.data.result.metadata.mode).toBe("manual");
     expect(response.body.data.result.title).toContain("Plan tranquilo por Medellin");
     expect(response.body.data.result.activities[0].matchExplanation).toContain("Empieza suave");
     expect(response.body.data.result.constraints.withinBudget).toBe(true);
@@ -100,6 +102,64 @@ describe("plan generator api", () => {
 
   it("requires authentication for plan generation", async () => {
     const response = await request(testApp()).post("/api/v1/plans/generate").send(planContext);
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe("UNAUTHORIZED");
+  });
+
+  it("generates a surprise plan from stored preferences and safe defaults", async () => {
+    const { app, token } = await onboardedUser();
+
+    const response = await request(app)
+      .post("/api/v1/plans/surprise")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ locale: "es", mood: "Active" });
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.source).toBe("surprise");
+    expect(response.body.data.context).toMatchObject({
+      locale: "es",
+      mood: "Active",
+      location: "Medellin",
+      budgetCents: 8000000,
+      availableMinutes: 150,
+      energyLevel: "low",
+      groupSize: 2,
+      indoorOutdoorPreference: "indoor",
+      interests: ["food", "music"]
+    });
+    expect(response.body.data.result.metadata).toMatchObject({
+      mode: "surprise",
+      defaultsApplied: ["location", "budgetCents", "availableMinutes"]
+    });
+    expect(response.body.data.result.activities.length).toBeGreaterThan(0);
+  });
+
+  it("persists surprise source metadata and allows retry-safe generation", async () => {
+    const { app, token } = await onboardedUser();
+
+    const first = await request(app)
+      .post("/api/v1/plans/surprise")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ locale: "en" });
+    const second = await request(app)
+      .post("/api/v1/plans/surprise")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ locale: "en" });
+    const persisted = await request(app)
+      .get(`/api/v1/plans/${first.body.data.id}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(second.body.data.id).not.toBe(first.body.data.id);
+    expect(persisted.body.data.source).toBe("surprise");
+    expect(persisted.body.data.result.metadata.mode).toBe("surprise");
+    expect(persisted.body.data.result.metadata.defaultsApplied).toContain("budgetCents");
+  });
+
+  it("requires authentication for surprise generation", async () => {
+    const response = await request(testApp()).post("/api/v1/plans/surprise").send({ locale: "es" });
 
     expect(response.status).toBe(401);
     expect(response.body.error.code).toBe("UNAUTHORIZED");

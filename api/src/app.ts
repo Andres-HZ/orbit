@@ -3,10 +3,18 @@ import express, { type NextFunction, type Request, type Response } from "express
 import helmet from "helmet";
 import { createAuthService, loginSchema, registerSchema, verifyToken } from "./auth.js";
 import {
+  contextLocationRequestSchema,
+  createNearbyService,
+  locationResolveSchema,
+  nearbyRequestSchema,
+  type NearbyService
+} from "./nearby.js";
+import {
   createMemoryPlanRepository,
   createPlanService,
   pgPlans,
   planContextSchema,
+  surprisePlanSchema,
   type PlanRepository
 } from "./plans.js";
 import { createProfileService, preferencesSchema } from "./profile.js";
@@ -25,6 +33,7 @@ export type AppDependencies = {
   users?: UserRepository;
   preferences?: PreferencesRepository;
   plans?: PlanRepository;
+  nearby?: NearbyService;
 };
 
 export function createApp(dependencies: AppDependencies = {}) {
@@ -36,6 +45,7 @@ export function createApp(dependencies: AppDependencies = {}) {
   const auth = createAuthService(users);
   const profile = createProfileService(users, preferences);
   const planService = createPlanService(preferences, plans);
+  const nearby = dependencies.nearby ?? createNearbyService();
   const app = express();
 
   function requireAuth(req: Request, _res: Response, next: NextFunction) {
@@ -112,11 +122,48 @@ export function createApp(dependencies: AppDependencies = {}) {
   );
 
   router.post(
+    "/location/resolve",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const payload = validate(locationResolveSchema, req.body);
+      res.json(ok(nearby.resolveLocation(payload)));
+    })
+  );
+
+  router.post(
+    "/weather/summary",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const payload = validate(contextLocationRequestSchema, req.body);
+      res.json(ok(await nearby.getWeather(payload.location)));
+    })
+  );
+
+  router.post(
+    "/nearby/discover",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const payload = validate(nearbyRequestSchema, req.body);
+      res.json(ok(await nearby.discoverNearby(payload.location, payload.categories)));
+    })
+  );
+
+  router.post(
     "/plans/generate",
     requireAuth,
     asyncHandler(async (req, res) => {
       const payload = validate(planContextSchema, req.body);
       const plan = await planService.generate(req.userId!, payload);
+      res.status(201).json(ok(plan));
+    })
+  );
+
+  router.post(
+    "/plans/surprise",
+    requireAuth,
+    asyncHandler(async (req, res) => {
+      const payload = validate(surprisePlanSchema, req.body);
+      const plan = await planService.generateSurprise(req.userId!, payload);
       res.status(201).json(ok(plan));
     })
   );
