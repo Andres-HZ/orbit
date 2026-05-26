@@ -26,7 +26,15 @@ import {
   Zap
 } from "lucide-react";
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
-import { api, type PlanContext, type Preferences, type StoredPlan } from "./api";
+import {
+  api,
+  type LocationContext,
+  type NearbyExperience,
+  type PlanContext,
+  type Preferences,
+  type StoredPlan,
+  type WeatherContext
+} from "./api";
 import { useAuth } from "./auth";
 import {
   AppShell,
@@ -267,7 +275,7 @@ function AuthCard({ mode }: { mode: "login" | "register" }) {
             />
           </label>
           {error && <p role="alert" className="error">{error}</p>}
-          <Button icon={mode === "register" ? <UserPlus size={18} /> : <LockKeyhole size={18} />}>
+          <Button type="submit" icon={mode === "register" ? <UserPlus size={18} /> : <LockKeyhole size={18} />}>
             {mode === "register" ? t.auth.createAccount : t.auth.login}
           </Button>
         </form>
@@ -354,7 +362,7 @@ function OnboardingPage() {
             }
           />
           {error && <p role="alert" className="error">{error}</p>}
-          <Button icon={<Sparkles size={18} />}>{t.onboarding.finish}</Button>
+          <Button type="submit" icon={<Sparkles size={18} />}>{t.onboarding.finish}</Button>
         </form>
       </Card>
     </AppShell>
@@ -363,11 +371,100 @@ function OnboardingPage() {
 
 function HomePage() {
   const auth = useAuth();
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const navigate = useNavigate();
   const [mood, setMood] = useState("Curious");
-  const [unavailable, setUnavailable] = useState("");
+  const [manualLocation, setManualLocation] = useState("Medellin");
+  const [activeLocation, setActiveLocation] = useState<LocationContext | null>(null);
+  const [weather, setWeather] = useState<WeatherContext | null>(null);
+  const [nearby, setNearby] = useState<NearbyExperience[]>([]);
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [contextError, setContextError] = useState("");
+  const [surpriseLoading, setSurpriseLoading] = useState(false);
+  const [surpriseError, setSurpriseError] = useState("");
   const moods = ["Curious", "Cozy", "Active", "Romantic"];
+
+  async function loadEnvironmentalContext(location: LocationContext) {
+    if (!auth.token) return;
+    setActiveLocation(location);
+    setContextError("");
+    try {
+      const [nextWeather, nextNearby] = await Promise.all([
+        api.getWeather(auth.token, location),
+        api.discoverNearby(auth.token, location)
+      ]);
+      setWeather(nextWeather);
+      setNearby(nextNearby);
+    } catch (nextError) {
+      setWeather(null);
+      setNearby([]);
+      setContextError(nextError instanceof Error ? nextError.message : t.home.contextUnavailable);
+    }
+  }
+
+  async function useManualLocation() {
+    if (!auth.token || !manualLocation.trim()) return;
+    setLocationLoading(true);
+    try {
+      const location = await api.resolveLocation(auth.token, {
+        source: "manual",
+        label: manualLocation.trim()
+      });
+      await loadEnvironmentalContext(location);
+    } catch (nextError) {
+      setContextError(nextError instanceof Error ? nextError.message : t.home.locationError);
+    } finally {
+      setLocationLoading(false);
+    }
+  }
+
+  async function useBrowserLocation() {
+    if (!auth.token) return;
+    if (!navigator.geolocation) {
+      setContextError(t.home.locationManualHint);
+      return;
+    }
+    setLocationLoading(true);
+    setContextError("");
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const location = await api.resolveLocation(auth.token!, {
+            source: "browser",
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude
+          });
+          await loadEnvironmentalContext(location);
+        } catch (nextError) {
+          setContextError(nextError instanceof Error ? nextError.message : t.home.locationError);
+        } finally {
+          setLocationLoading(false);
+        }
+      },
+      () => {
+        setLocationLoading(false);
+        setContextError(t.home.locationManualHint);
+      }
+    );
+  }
+
+  async function startSurprise() {
+    if (!auth.token) return;
+    setSurpriseLoading(true);
+    setSurpriseError("");
+    try {
+      const plan = await api.generateSurprisePlan(auth.token, {
+        locale,
+        mood,
+        location: activeLocation?.label
+      });
+      navigate(`/plans/${plan.id}`, { state: { plan } });
+    } catch (nextError) {
+      setSurpriseError(nextError instanceof Error ? nextError.message : t.home.surpriseError);
+    } finally {
+      setSurpriseLoading(false);
+    }
+  }
 
   return (
     <AppShell onLogout={auth.logout}>
@@ -403,35 +500,125 @@ function HomePage() {
           />
           <Button
             icon={<Compass size={18} />}
-            onClick={() => navigate("/plans/new", { state: { mood } })}
+            onClick={() =>
+              navigate("/plans/new", {
+                state: {
+                  mood,
+                  location: activeLocation,
+                  weather,
+                  nearby
+                }
+              })
+            }
           >
             {t.home.startPlanning}
           </Button>
         </Card>
         <Card>
+          <SectionTitle icon={<MapPin />}>{t.home.location}</SectionTitle>
+          <p className="muted">{activeLocation ? `${t.home.activeLocation}: ${activeLocation.label}` : t.home.locationBody}</p>
+          <div className="location-actions">
+            <Input
+              value={manualLocation}
+              placeholder={t.home.locationPlaceholder}
+              onChange={(event) => setManualLocation(event.target.value)}
+            />
+            <Button icon={<MapPin size={18} />} onClick={useManualLocation} disabled={locationLoading}>
+              {locationLoading ? t.home.locationLoading : t.home.useManualLocation}
+            </Button>
+            <Button icon={<Compass size={18} />} onClick={useBrowserLocation} disabled={locationLoading}>
+              {t.home.useBrowserLocation}
+            </Button>
+          </div>
+          {contextError && <p role="status" className="error">{contextError}</p>}
+        </Card>
+        <Card>
           <SectionTitle icon={<PartyPopper />}>{t.home.surpriseMe}</SectionTitle>
           <p>{t.home.surpriseBody}</p>
+          {surpriseLoading && (
+            <div className="surprise-loading" role="status">
+              <span className="surprise-orbit" />
+              <strong>{t.home.surpriseLoadingTitle}</strong>
+              <span>{t.home.surpriseLoadingBody}</span>
+            </div>
+          )}
+          {surpriseError && (
+            <EmptyState
+              icon={<Sparkles size={18} />}
+              title={t.home.surpriseErrorTitle}
+              body={surpriseError}
+            />
+          )}
           <Button
             icon={<Sparkles size={18} />}
-            onClick={() => setUnavailable(t.home.surpriseUnavailable)}
+            onClick={startSurprise}
+            disabled={surpriseLoading}
           >
-            {t.home.surpriseMe}
+            {surpriseLoading ? t.home.surpriseLoadingAction : surpriseError ? t.home.surpriseRetry : t.home.surpriseMe}
           </Button>
         </Card>
         <Card>
           <SectionTitle icon={<CloudSun />}>{t.home.weather}</SectionTitle>
-          <EmptyState
-            icon={<CloudSun size={18} />}
-            title={t.home.weatherPlaceholder}
-            body={t.home.weatherBody}
-          />
+          {weather ? (
+            <div className="weather-card">
+              <p className="metric">{weather.temperatureCelsius}°C</p>
+              <strong>{weather.condition}</strong>
+              <p className="muted">{weather.summary}</p>
+              <span className="pill">{t.home.suitability}: {t.plans.options[weather.suitability]}</span>
+            </div>
+          ) : (
+            <EmptyState
+              icon={<CloudSun size={18} />}
+              title={t.home.weatherPlaceholder}
+              body={contextError || t.home.weatherBody}
+            />
+          )}
         </Card>
-        <Card>
+        <Card className="nearby-card">
           <SectionTitle icon={<MapPin />}>{t.home.nearby}</SectionTitle>
-          <EmptyState icon={<MapPin size={18} />} title={t.home.nearbyPlaceholder} body={t.home.nearbyBody} />
+          {nearby.length ? (
+            <div className="nearby-list">
+              {nearby.slice(0, 6).map((experience) => (
+                <article key={experience.id} className="nearby-item">
+                  <p className="eyebrow">{t.home.nearbyCategories[experience.category]}</p>
+                  <h3>{experience.placeName ?? experience.title}</h3>
+                  {experience.placeName && <strong className="nearby-title">{experience.title}</strong>}
+                  {experience.description && <p>{experience.description}</p>}
+                  <p className="muted">
+                    {experience.address ?? experience.locationLabel}
+                    {experience.distanceLabel ? ` · ${experience.distanceLabel}` : ""}
+                  </p>
+                  {experience.openingHours && (
+                    <p className="muted">
+                      <Clock3 size={14} aria-hidden="true" /> {t.home.openingHours}: {experience.openingHours}
+                    </p>
+                  )}
+                  <p className="muted">
+                    {experience.rating ? `${experience.rating.toFixed(1)} ★ · ` : ""}
+                    {experience.priceLabel ? `${experience.priceLabel} · ` : ""}
+                    {experience.popularityLabel ?? experience.source}
+                  </p>
+                  {experience.tags?.length ? (
+                    <div className="tag-row">
+                      {experience.tags.slice(0, 3).map((tag) => (
+                        <span key={tag} className="mini-tag">{tag}</span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {experience.mapUrl && (
+                    <a className="map-link compact" href={experience.mapUrl} target="_blank" rel="noreferrer">
+                      <MapPin size={14} aria-hidden="true" />
+                      {t.plans.openMap}
+                    </a>
+                  )}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <EmptyState icon={<MapPin size={18} />} title={t.home.nearbyPlaceholder} body={contextError || t.home.nearbyBody} />
+          )}
         </Card>
       </div>
-      {unavailable && <p role="status" className="toast">{unavailable}</p>}
     </AppShell>
   );
 }
@@ -441,10 +628,20 @@ function PlanBuilderPage() {
   const { locale, t } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
-  const initialMood = (location.state as { mood?: string } | null)?.mood ?? defaultPlanContext.mood;
+  const routeState = location.state as {
+    mood?: string;
+    location?: LocationContext | null;
+    weather?: WeatherContext | null;
+    nearby?: NearbyExperience[];
+  } | null;
+  const initialMood = routeState?.mood ?? defaultPlanContext.mood;
   const [context, setContext] = useState<PlanContext>({
     ...defaultPlanContext,
-    mood: initialMood
+    mood: initialMood,
+    location: routeState?.location?.label ?? defaultPlanContext.location,
+    locationContext: routeState?.location ?? undefined,
+    weatherContext: routeState?.weather ?? undefined,
+    nearbyExperiences: routeState?.nearby?.length ? routeState.nearby : undefined
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -589,7 +786,7 @@ function PlanBuilderPage() {
             }
           />
           {error && <p role="alert" className="error">{error}</p>}
-          <Button icon={<Sparkles size={18} />} disabled={loading}>
+          <Button type="submit" icon={<Sparkles size={18} />} disabled={loading}>
             {loading ? t.plans.generating : t.plans.generate}
           </Button>
         </form>
@@ -600,12 +797,13 @@ function PlanBuilderPage() {
 
 function PlanResultPage() {
   const auth = useAuth();
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const navigate = useNavigate();
   const { planId } = useParams();
   const routeState = useLocation().state as { plan?: StoredPlan } | null;
   const [plan, setPlan] = useState<StoredPlan | null>(routeState?.plan ?? null);
   const [error, setError] = useState("");
+  const [retryingSurprise, setRetryingSurprise] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -624,7 +822,7 @@ function PlanResultPage() {
     };
   }, [auth.token, plan, planId, t.plans.loadError]);
 
-  if (error) {
+  if (error && !plan) {
     return (
       <AppShell onLogout={auth.logout}>
         <Card>
@@ -639,10 +837,32 @@ function PlanResultPage() {
 
   if (!plan) return <LoadingState label={t.plans.generating} />;
 
+  const isSurprise = plan.source === "surprise" || plan.result.metadata?.mode === "surprise";
+  const defaultsApplied = plan.result.metadata?.defaultsApplied ?? [];
+
+  async function retrySurprise() {
+    if (!auth.token || !plan) return;
+    setRetryingSurprise(true);
+    setError("");
+    try {
+      const nextPlan = await api.generateSurprisePlan(auth.token, {
+        locale,
+        mood: plan.context.mood,
+        location: plan.context.location
+      });
+      navigate(`/plans/${nextPlan.id}`, { state: { plan: nextPlan }, replace: true });
+      setPlan(nextPlan);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : t.home.surpriseError);
+    } finally {
+      setRetryingSurprise(false);
+    }
+  }
+
   return (
     <AppShell onLogout={auth.logout}>
       <section className="hero dashboard-hero">
-        <p className="eyebrow">{t.plans.resultEyebrow}</p>
+        <p className="eyebrow">{isSurprise ? t.plans.surpriseResultEyebrow : t.plans.resultEyebrow}</p>
         <h1>{plan.result.title}</h1>
         <p className="hero-subtitle">{plan.result.summary}</p>
       </section>
@@ -661,6 +881,24 @@ function PlanResultPage() {
           <p className="muted">{t.plans.constraintsOk}</p>
         </Card>
       </div>
+      {isSurprise && (
+        <Card className="surprise-meta">
+          <SectionTitle icon={<PartyPopper />}>{t.plans.surpriseContextTitle}</SectionTitle>
+          <p className="muted">
+            {t.plans.surpriseContextBody} {t.home.moods[plan.context.mood as keyof typeof t.home.moods] ?? plan.context.mood},{" "}
+            {formatCurrency(plan.context.budgetCents)}, {formatDuration(plan.context.availableMinutes)}.
+          </p>
+          {defaultsApplied.length > 0 && (
+            <p className="muted">
+              {t.plans.surpriseDefaults}: {defaultsApplied.join(", ")}
+            </p>
+          )}
+          {error && <EmptyState icon={<Sparkles size={18} />} title={t.home.surpriseErrorTitle} body={error} />}
+          <Button icon={<Sparkles size={18} />} onClick={retrySurprise} disabled={retryingSurprise}>
+            {retryingSurprise ? t.home.surpriseLoadingAction : t.home.surpriseRetry}
+          </Button>
+        </Card>
+      )}
       <div className="plan-activities">
         {plan.result.activities.map((activity) => (
           <Card key={`${activity.order}-${activity.title}`} className="activity-card">
@@ -673,6 +911,12 @@ function PlanResultPage() {
                 {formatDuration(activity.estimatedDurationMinutes)} · {activity.locationLabel} ·{" "}
                 {activity.distanceLabel}
               </p>
+              {activity.mapUrl && (
+                <a className="map-link" href={activity.mapUrl} target="_blank" rel="noreferrer">
+                  <MapPin size={16} aria-hidden="true" />
+                  {t.plans.openMap}
+                </a>
+              )}
               <EmptyState title={t.plans.why} body={activity.matchExplanation} />
             </div>
           </Card>
@@ -750,7 +994,7 @@ function ProfilePage() {
               setPreferences((current) => ({ ...current, favoriteCategories: next as string[] }))
             }
           />
-          <Button icon={<Save size={18} />}>{t.profile.save}</Button>
+          <Button type="submit" icon={<Save size={18} />}>{t.profile.save}</Button>
           {status && <p role="status" className="success">{status}</p>}
         </form>
       </Card>

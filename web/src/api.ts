@@ -25,6 +25,41 @@ export type Profile = {
   placeholders: Record<string, string>;
 };
 
+export type LocationContext = {
+  source: "browser" | "manual";
+  label: string;
+  latitude?: number;
+  longitude?: number;
+  precision: "exact" | "coarse" | "manual";
+};
+
+export type WeatherContext = {
+  condition: string;
+  temperatureCelsius: number;
+  suitability: "indoor" | "outdoor" | "either";
+  summary: string;
+  source: string;
+  updatedAt: string;
+};
+
+export type NearbyExperience = {
+  id: string;
+  category: "restaurant" | "cafe" | "event" | "park" | "nightlife" | "activity";
+  title: string;
+  placeName?: string;
+  description?: string;
+  locationLabel: string;
+  address?: string;
+  distanceLabel?: string;
+  openingHours?: string;
+  rating?: number;
+  popularityLabel?: string;
+  priceLabel?: string;
+  tags?: string[];
+  source: string;
+  mapUrl?: string;
+};
+
 export type PlanContext = {
   locale: "es" | "en";
   location: string;
@@ -35,6 +70,9 @@ export type PlanContext = {
   groupSize: number;
   indoorOutdoorPreference: "indoor" | "outdoor" | "either";
   interests: string[];
+  locationContext?: LocationContext;
+  weatherContext?: WeatherContext;
+  nearbyExperiences?: NearbyExperience[];
 };
 
 export type PlanActivity = {
@@ -45,6 +83,8 @@ export type PlanActivity = {
   estimatedDurationMinutes: number;
   locationLabel: string;
   distanceLabel: string;
+  mapUrl?: string;
+  providerSource?: string;
   matchExplanation: string;
 };
 
@@ -61,6 +101,11 @@ export type PlanResult = {
     withinBudget: boolean;
     withinTime: boolean;
   };
+  metadata?: {
+    mode: "manual" | "surprise";
+    defaultsApplied?: string[];
+    contextSummary?: string[];
+  };
   activities: PlanActivity[];
 };
 
@@ -68,6 +113,7 @@ export type StoredPlan = {
   id: string;
   requestId: string;
   userId: string;
+  source: "manual" | "surprise";
   context: PlanContext;
   result: PlanResult;
   createdAt: string;
@@ -127,9 +173,55 @@ export const api = {
       token
     );
   },
+  resolveLocation(
+    token: string,
+    input: { source: "browser" | "manual"; label?: string; latitude?: number; longitude?: number }
+  ) {
+    return request<LocationContext>(
+      "/location/resolve",
+      {
+        method: "POST",
+        body: JSON.stringify(input)
+      },
+      token
+    );
+  },
+  getWeather(token: string, location: LocationContext) {
+    return request<WeatherContext>(
+      "/weather/summary",
+      {
+        method: "POST",
+        body: JSON.stringify({ location })
+      },
+      token
+    );
+  },
+  discoverNearby(token: string, location: LocationContext) {
+    return request<NearbyExperience[]>(
+      "/nearby/discover",
+      {
+        method: "POST",
+        body: JSON.stringify({ location })
+      },
+      token
+    );
+  },
   generatePlan(token: string, input: PlanContext) {
     return request<StoredPlan>(
       "/plans/generate",
+      {
+        method: "POST",
+        body: JSON.stringify(input)
+      },
+      token
+    );
+  },
+  generateSurprisePlan(
+    token: string,
+    input: Pick<PlanContext, "locale"> & Partial<Pick<PlanContext, "mood" | "location" | "budgetCents" | "availableMinutes">>
+  ) {
+    return request<StoredPlan>(
+      "/plans/surprise",
       {
         method: "POST",
         body: JSON.stringify(input)

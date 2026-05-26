@@ -22,13 +22,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(Boolean(token));
 
+  function applyProfile(nextProfile: Profile) {
+    setProfile(nextProfile);
+    setUser(nextProfile.user);
+  }
+
   async function applyToken(nextToken: string, nextUser?: AuthUser) {
     localStorage.setItem(tokenKey, nextToken);
     setToken(nextToken);
     if (nextUser) setUser(nextUser);
     const nextProfile = await api.me(nextToken);
-    setProfile(nextProfile);
-    setUser(nextProfile.user);
+    applyProfile(nextProfile);
   }
 
   async function login(email: string, password: string) {
@@ -44,8 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function refreshProfile() {
     if (!token) return;
     const nextProfile = await api.me(token);
-    setProfile(nextProfile);
-    setUser(nextProfile.user);
+    applyProfile(nextProfile);
   }
 
   function logout() {
@@ -65,8 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const nextProfile = await api.me(token);
         if (!active) return;
-        setProfile(nextProfile);
-        setUser(nextProfile.user);
+        applyProfile(nextProfile);
       } catch {
         if (!active) return;
         logout();
@@ -89,7 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       register,
       refreshProfile,
-      setProfile,
+      setProfile: applyProfile,
       logout
     }),
     [token, user, profile, loading]

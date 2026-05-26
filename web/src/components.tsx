@@ -65,10 +65,11 @@ export function Button({
   children,
   icon,
   className = "",
+  type = "button",
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & { icon?: ReactNode }) {
   return (
-    <button className={`button ${className}`} {...props}>
+    <button className={`button ${className}`} type={type} {...props}>
       {icon}
       {children}
     </button>
